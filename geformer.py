@@ -162,7 +162,7 @@ class Geformer(tf.keras.Model):
         Args:
             inputs: input tensor list of size 1 or 2
                 First item: DNA one-hot encoding tensor with shape [batch_size, input_length*2^num_cb, 1, 4].
-                Second item: Cell-type-specific embedding with shape [batch_size, input_length, hidden_size].
+                Second item: Cell-type-specific embedding with shape [batch_size, input_length, hidden_size - num_channels].
             training: boolean, whether in training mode or not.
         Returns:
                 returns a dictionary {
