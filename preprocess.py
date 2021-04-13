@@ -89,10 +89,12 @@ def get_gene_annot(gene_annot_file='data/encode/gencode.v19.annotation.gtf.gz'):
     return id2name, gene2loc
 
     
-def get_tf():
+def get_tf_motif_match():
     """need to be improved, generate a two-column file, motif-tf
     Return:
-        A list of TF(gene) name (711 TFs).
+        Two items
+            First item: a list of TF(gene) name (711 TFs).
+            Second item: dic mapping motif name to tf (gene) name
     """
     from scipy.io import loadmat
     motif_info = loadmat('data/motif/MotifMatch_human_rmdup.mat') 
@@ -106,13 +108,17 @@ def get_tf():
             motif2tf[motif] = [tf]
         else:
             motif2tf[motif]+=[tf]
+    # 1315 out of 1465 motifs could find matched tfs.
     motif_list_filtered = [item for item in motif2tf.keys() if item in motif_list]
     tf_list = []
     for each in motif_list_filtered:
         tf_list += motif2tf[each]
     tf_list = list(set(tf_list))
     tf_list.sort()
-    return tf_list
+
+    isContain = {item : True if item in motif_list_filtered else False for item in motif_list}
+    
+    return tf_list, {item : motif2tf[item] for item in motif_list_filtered}, isContain
 
 
 def quantile_norm(df):
@@ -148,8 +154,8 @@ def aggregate_rseq(cell_ids, id2name, gene2loc, tf_list, use_norm = True, save =
     """
     sorted_genes = get_sorted_gene(gene2loc)
     sorted_locs = [gene2loc[item] for item in sorted_genes]
-    aggregated_tf_expr = np.empty((len(tf_list),len(cell_ids)),dtype='float32')
-    aggregated_full_expr = np.empty((len(sorted_genes),len(cell_ids)),dtype='float32')
+    aggregated_tf_expr = np.empty((len(tf_list), len(cell_ids)), dtype = 'float32')
+    aggregated_full_expr = np.empty((len(sorted_genes), len(cell_ids)), dtype = 'float32')
     for cell_id in cell_ids:
         average_tpm = merge_rseq_reps(cell_id, id2name)
         tf_tpm = [average_tpm[item] for item in tf_list]
@@ -168,16 +174,63 @@ def aggregate_rseq(cell_ids, id2name, gene2loc, tf_list, use_norm = True, save =
         pd_aggregated_full_expr = quantile_norm(pd_aggregated_full_expr)
 
     if save:
-        pd_aggregated_tf_expr.to_csv('data/encode/aggregated_tf_expr.csv',sep = '\t')
-        pd_aggregated_full_expr.to_csv('data/encode/aggregated_full_expr.csv',sep = '\t')
+        pd_aggregated_tf_expr.to_csv('data/encode/aggregated_tf_expr.csv', sep = '\t')
+        pd_aggregated_full_expr.to_csv('data/encode/aggregated_full_expr.csv', sep = '\t')
 
     
+def get_motif_score(tf_list, motif2tf, isContain, part_id,
+                    region_file = 'data/motif/selected.128k.bin.homer.bed',
+                    save = True):
+    """parse the motifscan results by homer tool.
+    Args:
+        region_file: path to bed file that was used for motif scanning
+        motifscan_file: path to the motifscan file from Homer tool
+    """
+    import time
+    regions = ['_'.join(item.split('\t')[:4]) for item in open(region_file).readlines()]
+    #13300000 regions (bins), 711 TFs
+    #motifscore = np.empty((len(regions), len(tf_list)), dtype = 'float32')
+    print(len(regions),len(tf_list))
+    def parse_motifscan(part_id):
+        motifscan_file = 'data/motif/motifscan.128k.p%d.txt' % part_id
+        motifscore = np.empty((len(regions), len(tf_list)), dtype = 'float32')
+        print(motifscan_file)
+        count = 0
+        f_motifscan = open(motifscan_file,'r')
+        #skip header
+        line = f_motifscan.readline()
+        line = f_motifscan.readline()
+        while line != '':
+            if count % 500000 == 0:
+                print(motifscan_file, count)  
+            motif = line.split('\t')[3]
+            if isContain[motif]:
+                region_id = line.split('\t')[0]
+                score = float(line.split('\t')[-1].rstrip())
+                for tf in motif2tf[motif]:
+                    previous = motifscore[int(region_id)-1][tf_list.index(tf)]
+                    motifscore[int(region_id)-1][tf_list.index(tf)] = max(score, previous)
+            line = f_motifscan.readline()
+            count += 1
+        f_motifscan.close()
+        np.save('data/motif/motifscore.p%d.npy' % part_id, motifscore)
 
+    #motifscan_file = 'data/motif/motifscan.128k.txt'
+    parse_motifscan(part_id)
+
+    # pd_motifscore = pd.DataFrame(data = motifscore,
+    #                         index = regions,
+    #                         columns = tf_list)
+    # if save:
+    #     pd_motifscore.to_csv('data/motif/motifscore.128k.csv', sep = '\t')
+    #     np.save('data/motif/motifscore.npy',motifscore)
 
     
 
 if __name__ == "__main__":
     cell_ids = get_cell_ids()
-    tf_list = get_tf()
-    id2name, gene2loc = get_gene_annot()
-    aggregate_rseq(cell_ids, id2name ,gene2loc, tf_list)
+    tf_list, motif2tf, isContain = get_tf_motif_match()
+    #id2name, gene2loc = get_gene_annot()
+    #aggregate_rseq(cell_ids, id2name ,gene2loc, tf_list)
+    part_id = int(sys.argv[1])
+    get_motif_score(tf_list, motif2tf, isContain, part_id)
