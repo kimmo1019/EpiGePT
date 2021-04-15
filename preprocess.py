@@ -177,7 +177,6 @@ def aggregate_rseq(cell_ids, id2name, gene2loc, tf_list, use_norm = True, save =
         pd_aggregated_tf_expr.to_csv('data/encode/aggregated_tf_expr.csv', sep = '\t')
         pd_aggregated_full_expr.to_csv('data/encode/aggregated_full_expr.csv', sep = '\t')
 
-    
 def get_motif_score(tf_list, motif2tf, isContain, part_id,
                     region_file = 'data/motif/selected.128k.bin.homer.bed',
                     save = True):
@@ -225,12 +224,47 @@ def get_motif_score(tf_list, motif2tf, isContain, part_id,
     #     pd_motifscore.to_csv('data/motif/motifscore.128k.csv', sep = '\t')
     #     np.save('data/motif/motifscore.npy',motifscore)
 
+def get_targets(cell_ids, bams_file = 'data/encode/bams_list.txt',
+                region_file = 'data/motif/selected.128k.bin.homer.bed',
+                save = True):
+    """extract the target for geformer (DNase-seq, and 7 ChIP-seq signals)
+    Args:
+        bams_file: a text records the bam file path for each cell type/tissue
+    Return:
+        A numpy array with shape [num_regions, num_targets] for each cell type/tissue
+    """
+
+    regions = ['_'.join(item.split('\t')[:4]) for item in open(region_file).readlines()]
+    targets = ['dseq', 'cseq/CTCF-human', 'cseq/H3K27ac-human', 'cseq/H3K4me3-human', \
+            'cseq/H3K36me3-human', 'cseq/H3K27me3-human', 'cseq/H3K9me3-human', \
+            'cseq/H3K4me1-human']
+    cell2targets = {item : np.empty((len(regions),len(targets))) for item in cell_ids}
+    targets_data = np.empty((len(cell_ids), len(regions), len(targets)))
+    for line in open(bams_file).readlines():
+        cell_id = int(line.split('/')[3])
+        assert cell_id in cell_ids
+        target_file = line.split('/')[-1].strip().replace('bam','128k.bed')
+        target_path = '/'.join(line.split('/')[:-1] + [target_file])
+        print(target_path)
+        target = 'dseq' if 'dseq' in line else line.split('/')[4] + '/' + line.split('/')[5]
+        cell2targets[cell_id][:, targets.index(target)] = np.loadtxt(target_path, 
+                                                        delimiter = '\t', usecols = 3)
+    for cell_id in cell_ids:
+        targets_data[cell_ids.index(cell_id), :, :] = cell2targets[cell_id]
     
+    if save:
+        np.save('data/encode/targets_data.npy', targets_data)
+        for cell_id in cell_ids:
+            pd_data = pd.DataFrame(data = cell2targets[cell_id],
+                                    index = regions,
+                                    columns = targets)
+            pd_data.to_csv('data/encode/target_data/%d.target.csv' % cell_id, sep = '\t')
+
 
 if __name__ == "__main__":
     cell_ids = get_cell_ids()
     tf_list, motif2tf, isContain = get_tf_motif_match()
     #id2name, gene2loc = get_gene_annot()
     #aggregate_rseq(cell_ids, id2name ,gene2loc, tf_list)
-    part_id = int(sys.argv[1])
-    get_motif_score(tf_list, motif2tf, isContain, part_id)
+    get_targets(cell_ids)
+    #get_motif_score(tf_list, motif2tf, isContain, int(sys.argv[1]))

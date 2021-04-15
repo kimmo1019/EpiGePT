@@ -128,12 +128,66 @@ class ConvStack(tf.keras.layers.Layer):
             # Run inputs through the sublayers.
             conv_layer, rconv_layer, pooling_layer, norm_layer = layer
             with tf.name_scope("layer_%d" % i):
-                x = tf.keras.activations.gelu(inputs) if i == 0 else tf.keras.activations.gelu(x)
+                #x = tf.keras.activations.gelu(inputs) if i == 0 else tf.keras.activations.gelu(x)
+                x = tf.keras.activations.relu(inputs) if i == 0 else tf.keras.activations.relu(x)
                 x = conv_layer(x)
                 x = pooling_layer(x)
                 tmp = rconv_layer(x)
                 x = x + tmp
                 x = norm_layer(x)
+        return tf.squeeze(x, axis = 2)
+
+class MultiTaskPre(tf.keras.layers.Layer):
+    """Multi-task prediction module.
+    This module is mainly made up with 1x1 convolutional layers.
+    """
+    def __init__(self, params):  
+        super(MultiTaskPre, self).__init__()
+        self.params = params
+        self.layers = []
+
+    def build(self, input_shape):
+        """Builds the Multi-task prediction module."""
+        params = self.params
+        conv_layer1 = tf.keras.layers.Conv2D(
+            filters = 1024,
+            kernel_size = (1,1), strides = (1, 1),
+            padding = 'same',activation = None)
+        norm_layer = tf.keras.layers.BatchNormalization()
+        conv_layer2 = tf.keras.layers.Conv2D(
+            filters = params['num_targets'],
+            kernel_size = (1,1), strides = (1, 1),
+            padding = 'same',activation = None)        
+        #tf.nn.dropout(weights, rate=self.attention_dropout)
+
+        self.layers = [conv_layer1, norm_layer, conv_layer2]
+
+        super(MultiTaskPre, self).build(input_shape)
+
+    def get_config(self):
+        return {
+                "params": self.params,
+        }
+
+    def call(self, inputs, training):
+        """Return the output of the multi-task prediction.
+        Args:
+            inputs: tensor with shape [batch_size, input_length, hidden_size]
+            training: boolean, whether in training mode or not.
+        Returns:
+            Output of multi-task prediction.
+            float32 tensor with shape [batch_size, input_length, num_targets]
+        """
+        conv_layer1, norm_layer, conv_layer2 = self.layers
+        x = tf.expand_dims(inputs, axis=2)
+        x = tf.keras.activations.relu(x)
+        x = conv_layer1(x)
+        x = norm_layer(x)
+        x = tf.nn.dropout(x, rate=self.params['attention_dropout'])
+        #x = tf.keras.activations.gelu(x)
+        x = tf.keras.activations.relu(x)
+        x = conv_layer2(x)
+        x = tf.math.softplus(x)
         return tf.squeeze(x, axis = 2)
 
 class Geformer(tf.keras.Model):
@@ -146,6 +200,7 @@ class Geformer(tf.keras.Model):
         super(Geformer, self).__init__(name=name)
         self.params = params
         self.conv_stack = ConvStack(params)
+        self.multi_task_pre = MultiTaskPre(params)
         # self.embedding_softmax_layer = embedding_layer.EmbeddingSharedWeights(
         #         params["vocab_size"], params["hidden_size"])
         self.encoder_stack = EncoderStack(params)
@@ -177,7 +232,8 @@ class Geformer(tf.keras.Model):
         with tf.name_scope("Convolution"):
             conv_outputs = self.conv_stack(inputs)
             # Shape for convolution stack [batch_size, input_length, num_channels]
-            embedded_inputs = tf.concat([conv_outputs,embedded_celltype],axis=-1)
+            #embedded_inputs = tf.concat([conv_outputs,embedded_celltype],axis=-1)
+            embedded_inputs = tf.keras.layers.Concatenate(axis = -1)([conv_outputs, embedded_celltype])
             # embedded_inputs with output shape [batch_size, input_length, hidden_size]
 
         # Variance scaling is used here because it seems to work in many problems.
@@ -189,7 +245,9 @@ class Geformer(tf.keras.Model):
             attention_bias = tf.expand_dims(
                 tf.expand_dims(attention_bias, axis=1), axis=1)
             encoder_outputs = self.encode(embedded_inputs, attention_bias, training)
-            return encoder_outputs
+        with tf.name_scope("Multitask_output"):
+            multitask_output = self.multi_task_pre(encoder_outputs)
+            return multitask_output
 
     def encode(self, embedded_inputs, attention_bias, training):
         """Generate continuous representation for inputs.
