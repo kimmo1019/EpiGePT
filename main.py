@@ -114,27 +114,40 @@ def load_inputs(params,
     motifscore_mat = np.load(motifscore_file).reshape(len(dna_seqs), 1000, expr_mat.shape[0])
     targets_mat = np.load(targets_file)
     for i in range(params["num_targets"]):
-        N = np.max(targets_mat[:,:,i])
-        N_i = np.max(targets_mat[:,:,i], axis = 1)
+        N_i = np.sum(targets_mat[:,:,i], axis = 1)
+        N = np.min(N_i)
         for j in range(targets_mat.shape[0]):
             targets_mat[j,:,i] = np.log(1. + targets_mat[j,:,i]*N/N_i[j])
     targets_mat = targets_mat.reshape((expr_mat.shape[1], len(dna_seqs), 1000, params["num_targets"]))
     #raw readscount, normalize, log(1+xij*N/Ni)
     return seq_mat, expr_mat, motifscore_mat, targets_mat
 
-def evaluate(model, test_cell_idx, seq_mat, expr_mat, motifscore_mat, targets_mat):
+def evaluate(model, test_cell_idx, seq_mat, expr_mat, motifscore_mat, targets_mat, batch_size = 1330):
     from scipy.stats import pearsonr
     corr_all = np.empty((len(test_cell_idx), targets_mat.shape[-1]))
     for cell_idx in test_cell_idx:
-        print(cell_idx)
-        seq_test_mat = seq_mat
-        expr_test_mat = np.tile(expr_mat[:, cell_idx], (motifscore_mat.shape[0], 1000, 1))
-        motifscore_test_mat = motifscore_mat
-        targets_test_mat = targets_mat[cell_idx, :, :, :]
-        pre = model.predict([seq_test_mat, expr_test_mat*motifscore_test_mat], batch_size = 4)
-        #pre with shape [13300, 1000, 8]
-        for i in range(targets_test_mat.shape[-1]):
-            corr_all[list(test_cell_idx).index(cell_idx)][i] = pearsonr(targets_test_mat[:,:,i].flatten(), pre[:,:,i].flatten())[0]
+        target_pre = np.empty((motifscore_mat.shape[0], 1000, targets_mat.shape[-1]))
+        for batch_idx in range(int(np.ceil(motifscore_mat.shape[0] / batch_size))):
+            print(cell_idx, batch_idx)
+            if (batch_idx+1)*batch_size > motifscore_mat.shape[0]:
+                ind = np.arange(batch_idx * batch_size, motifscore_mat.shape[0])
+            else:
+                ind = np.arange(batch_idx * batch_size, (batch_idx+1)*batch_size)
+            expr_mat_batch = np.tile(expr_mat[:, cell_idx], (len(ind), 1000, 1))
+            motifscore_mat_batch = motifscore_mat[ind, :, :]
+            seq_mat_batch = seq_mat[ind, :, :, :]
+            batch_pre = model.predict([seq_mat_batch, expr_mat_batch*motifscore_mat_batch], 
+                                    batch_size = 4,
+                                    verbose=1, 
+                                    max_queue_size=30,
+                                    workers=20,
+                                    use_multiprocessing=True)
+            target_pre[ind, :, :] = batch_pre   
+        #target_pre with shape [13300, 1000, 8]
+        for i in range(targets_mat.shape[-1]):
+            corr_all[test_cell_idx.index(cell_idx)][i] = pearsonr(targets_mat[cell_idx,:,:,i].flatten(), target_pre[:,:,i].flatten())[0]
+        np.save('results/target_pre_cell_%d.npy' % cell_idx, target_pre) 
+        np.save('results/corr_cell_%d.npy' %cell_idx, corr_all[test_cell_idx.index(cell_idx), :])
     print(np.mean(corr_all,axis = 0), np.mean(corr_all,axis = 1))
     np.save('corr.npy', corr_all)
     
@@ -144,10 +157,10 @@ def train(params):
     optimizer = tf.keras.optimizers.Adam(learning_rate = FLAGS.lr)
     model.compile(optimizer, loss = tf.keras.losses.MeanSquaredError())
     seq_mat, expr_mat, motifscore_mat, targets_mat = load_inputs(params)
-    #seq_mat = np.random.normal(size=(20, 128000, 1, 4))
+    #seq_mat = np.random.normal(size=(2, 128000, 1, 4))
     #expr_mat = np.random.normal(size=([711, 28]))
-    #motifscore_mat = np.random.normal(size=(20, 1000, 711))
-    #targets_mat = np.random.normal(size=(28, 20, 1000, 8))
+    #motifscore_mat = np.random.normal(size=(2, 1000, 711))
+    #targets_mat = np.random.normal(size=(28, 2, 1000, 8))
     print('load data done')
     print(seq_mat.shape, expr_mat.shape, motifscore_mat.shape, targets_mat.shape)
     np.random.seed(0)
@@ -161,6 +174,7 @@ def train(params):
     random.shuffle(data_queue)
     train_queue = data_queue[:int(0.99*len(data_queue))]
     valid_queue = data_queue[int(0.99*len(data_queue)):]
+    print(train_cell_idx, test_cell_idx)
     print(len(train_queue),len(valid_queue))
     train_generator = generate_batch(params, params["bs"], train_queue, 
                     seq_mat, expr_mat, motifscore_mat, targets_mat)
@@ -175,13 +189,15 @@ def train(params):
     callbacks = [tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=2),
                 EarlyStoppingAtMinLoss(patience=2)]
     history = model.fit(x = train_generator, steps_per_epoch = len(train_queue)//params["bs"], 
-                epochs = 100, verbose = 1, batch_size = params["bs"], callbacks = callbacks,
+                epochs = 30, verbose = 1, batch_size = params["bs"], callbacks = callbacks,
                 validation_data = validation_data,
                 max_queue_size = 100, workers = 28,use_multiprocessing = True)
                 #)
-    #model.load_weights('model_epoch2.h5')
+    #model.load_weights('checkpoints/model_epoch0.h5')
+    print(model.summary())
     print('Model training done')
     model.save_weights("checkpoints/model.h5")
+    seq_mat, expr_mat, motifscore_mat, targets_mat = load_inputs(params)
     evaluate(model, test_cell_idx, seq_mat, expr_mat, motifscore_mat, targets_mat)
     
 
@@ -213,8 +229,8 @@ if __name__ == '__main__':
     flags.DEFINE_integer("num_channels", 313, "Output channels number for convolution stack")
     flags.DEFINE_integer("num_cb", 7, "Number of convolution blocks")
     flags.DEFINE_integer("hidden_size", 1024, "word embedding dimension")#2048
-    flags.DEFINE_integer("num_hidden_layers", 10, "number of MultiHeadAttention") #10
-    flags.DEFINE_integer("num_heads", 8, "number of heads in each MHA") #8
+    flags.DEFINE_integer("num_hidden_layers", 5, "number of MultiHeadAttention") #10
+    flags.DEFINE_integer("num_heads", 4, "number of heads in each MHA") #8
     flags.DEFINE_integer("num_targets", 8, "number of targets in multi-task prediction")
     flags.DEFINE_float("attention_dropout", 0.1, "attention dropout rate")
     flags.DEFINE_integer("filter_size", 512, "filter size for the inner (first) dense layer in ffn")#512
