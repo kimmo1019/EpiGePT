@@ -138,6 +138,7 @@ class Attention(tf.keras.layers.Layer):
         # for numeric stability. When training with float16, we keep the input
         # and output in float16 for better performance.
         weights = tf.nn.softmax(logits, name="attention_weights")
+        att_weights = weights
         if training:
             weights = tf.nn.dropout(weights, rate=self.attention_dropout)
         attention_output = tf.einsum("BNFT,BTNH->BFNH", weights, value)
@@ -145,7 +146,7 @@ class Attention(tf.keras.layers.Layer):
         # Run the outputs through another linear projection layer. Recombining heads
         # is automatically done --> [batch_size, length, hidden_size]
         attention_output = self.output_dense_layer(attention_output)
-        return attention_output
+        return attention_output, att_weights
 
 
 class SelfAttention(Attention):

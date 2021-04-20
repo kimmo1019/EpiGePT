@@ -1,27 +1,36 @@
 import tensorflow as tf
 import utils
-from layers import ffn_layer
-from layers import attention_layer
-from layers import prepost_layer
-from layers import embedding_layer
-from layers import position_embedding
+from layers import ffn_layer, attention_layer, prepost_layer
+from layers import embedding_layer, position_embedding
+import numpy as np
 
+"""
+To do list
+    1. Change module name,  xxxModule, xxx: Transformer, ResConv, MultiTaskPre(done)
+    2. Add self-attention weights, need to change attention_layer.py, prepost_layer, geformer(done)
+    3. Add dilated convolution to Conv
+    4. Add pretrain stage
+    5. tf.Tape
+    6. Multiple GPU (done)
+    7. tf.data.Dataset.from_generator
+    8. 1000 parametrized (done)
+"""
 
-class EncoderStack(tf.keras.layers.Layer):
-    """Transformer encoder stack.
-    The encoder stack is made up of N identical layers. Each layer is composed
+class TransformerModule(tf.keras.layers.Layer):
+    """Transformer module.
+    The module is made up of N identical layers. Each layer is composed
     of the sublayers:
         1. Self-attention layer
-        2. Feedforward network (which is 2 fully-connected layers)
+        2. Feedforward network (2 fully-connected layers)
     """
 
     def __init__(self, params):  
-        super(EncoderStack, self).__init__()
+        super(TransformerModule, self).__init__()
         self.params = params
         self.layers = []
 
     def build(self, input_shape):
-        """Builds the encoder stack."""
+        """Builds the Transformer module."""
         params = self.params
         for _ in range(params["num_hidden_layers"]):
             # Create sublayers for each layer.
@@ -32,52 +41,59 @@ class EncoderStack(tf.keras.layers.Layer):
                     params["hidden_size"], params["filter_size"], params["relu_dropout"])
 
             self.layers.append([
-                    prepost_layer.PrePostProcessingWrapper(self_attention_layer, params),
-                    prepost_layer.PrePostProcessingWrapper(feed_forward_network, params)
+                    prepost_layer.PrePostProcessingAttWrapper(self_attention_layer, params),
+                    prepost_layer.PrePostProcessingFnnWrapper(feed_forward_network, params)
             ])
         # Create final layer normalization layer.
         self.output_normalization = tf.keras.layers.LayerNormalization(
                 epsilon=1e-6, dtype="float32")
-        super(EncoderStack, self).build(input_shape)
+        super(TransformerModule, self).build(input_shape)
 
     def get_config(self):
         return {
                 "params": self.params,
         }
 
-    def call(self, encoder_inputs, attention_bias, training):
-        """Return the output of the encoder layer stacks.
+    def call(self, inputs, attention_bias, training):
+        """Return the output of the transformer module.
         Args:
-            encoder_inputs: tensor with shape [batch_size, input_length, hidden_size]
+            inputs: tensor with shape [batch_size, input_length, hidden_size]
             attention_bias: bias for the encoder self-attention layer. [batch_size, 1,
                 1, input_length]
             training: boolean, whether in training mode or not.
         Returns:
-            Output of encoder layer stack.
-            float32 tensor with shape [batch_size, input_length, hidden_size]
+            Outputs of transformer module.
+                item[0]: transformer encoded results
+                        float32 tensor with shape [batch_size, input_length, hidden_size]
+                item[1]: self-attention weights
+                        float32 tensor with shape [batch_size, num_hidden_layers, num_heads, input_length, input_length]
         """
-        for n, layer in enumerate(self.layers):
+        attention_weights = {}
+        x = inputs
+        for i, layer in enumerate(self.layers):
             # Run inputs through the sublayers.
             self_attention_layer = layer[0]
             feed_forward_network = layer[1]
 
-            with tf.name_scope("layer_%d" % n):
+            with tf.name_scope("layer_%d" % i):
                 with tf.name_scope("self_attention"):
-                    encoder_inputs = self_attention_layer(
-                            encoder_inputs, attention_bias, training=training)
+                    x, w = self_attention_layer(
+                            x, attention_bias, training=training)
+                    attention_weights['layer_%d' % i] = w
                 with tf.name_scope("ffn"):
-                    encoder_inputs = feed_forward_network(
-                            encoder_inputs, training=training)
+                    x = feed_forward_network(
+                            x, training=training)
+        
+        #attention_weights = tf.stack(attention_weights, axis = 1)
+        return self.output_normalization(x), attention_weights
 
-        return self.output_normalization(encoder_inputs)
 
-
-class ConvStack(tf.keras.layers.Layer):
-    """Convolution stack.
-    The convolution stack is made up of "num_cb" conv+pooling blocks.
+class ConvModule(tf.keras.layers.Layer):
+    """Convolution Module.
+    The convolution module is made up of "num_cb" conv+pooling blocks.
     """
     def __init__(self, params):  
-        super(ConvStack, self).__init__()
+        super(ConvModule, self).__init__()
         self.params = params
         self.layers = []
 
@@ -108,7 +124,7 @@ class ConvStack(tf.keras.layers.Layer):
 
             self.layers.append([conv_layer, rconv_layer, pooling_layer, norm_layer])
 
-        super(ConvStack, self).build(input_shape)
+        super(ConvModule, self).build(input_shape)
 
     def get_config(self):
         return {
@@ -116,14 +132,15 @@ class ConvStack(tf.keras.layers.Layer):
         }
 
     def call(self, inputs, training):
-        """Return the output of the conv stack.
+        """Return the output of the convolution module.
         Args:
             inputs: tensor with shape [batch_size, input_length*2^num_cb, 1, 4]
             training: boolean, whether in training mode or not.
         Returns:
-            Output of conv stack.
+            Output of convolution module.
             float32 tensor with shape [batch_size, input_length, num_channels]
         """
+
         for i, layer in enumerate(self.layers):
             # Run inputs through the sublayers.
             conv_layer, rconv_layer, pooling_layer, norm_layer = layer
@@ -137,12 +154,12 @@ class ConvStack(tf.keras.layers.Layer):
                 x = norm_layer(x)
         return tf.squeeze(x, axis = 2)
 
-class MultiTaskPre(tf.keras.layers.Layer):
+class MultiTaskPreModule(tf.keras.layers.Layer):
     """Multi-task prediction module.
     This module is mainly made up with 1x1 convolutional layers.
     """
     def __init__(self, params):  
-        super(MultiTaskPre, self).__init__()
+        super(MultiTaskPreModule, self).__init__()
         self.params = params
         self.layers = []
 
@@ -162,7 +179,7 @@ class MultiTaskPre(tf.keras.layers.Layer):
 
         self.layers = [conv_layer1, norm_layer, conv_layer2]
 
-        super(MultiTaskPre, self).build(input_shape)
+        super(MultiTaskPreModule, self).build(input_shape)
 
     def get_config(self):
         return {
@@ -199,13 +216,13 @@ class Geformer(tf.keras.Model):
         """
         super(Geformer, self).__init__(name=name)
         self.params = params
-        self.conv_stack = ConvStack(params)
-        self.multi_task_pre = MultiTaskPre(params)
+        self.conv_net = ConvModule(params)
         # self.embedding_softmax_layer = embedding_layer.EmbeddingSharedWeights(
         #         params["vocab_size"], params["hidden_size"])
-        self.encoder_stack = EncoderStack(params)
         self.position_embedding = position_embedding.RelativePositionEmbedding(
                 hidden_size=self.params["hidden_size"])
+        self.transformer_net = TransformerModule(params)
+        self.multi_task_pre = MultiTaskPreModule(params)
 
     def get_config(self):
         return {
@@ -230,11 +247,16 @@ class Geformer(tf.keras.Model):
 
         # Convolution stack for reducing feature size and enhancing receptive field.
         with tf.name_scope("Convolution"):
-            conv_outputs = self.conv_stack(inputs)
+            conv_outputs = self.conv_net(inputs)
             # Shape for convolution stack [batch_size, input_length, num_channels]
             #embedded_inputs = tf.concat([conv_outputs,embedded_celltype],axis=-1)
             embedded_inputs = tf.keras.layers.Concatenate(axis = -1)([conv_outputs, embedded_celltype])
             # embedded_inputs with output shape [batch_size, input_length, hidden_size]
+            # shuffle channels for position embeddings
+            np.random.seed(123)
+            shuffle_indx = np.random.choice(np.arange(self.params["hidden_size"]),
+                           size = self.params["hidden_size"], replace=False)
+            embedded_inputs = tf.gather(embedded_inputs, shuffle_indx, axis = -1)
 
         # Variance scaling is used here because it seems to work in many problems.
         # Other reasonable initializers may also work just as well.
@@ -244,13 +266,15 @@ class Geformer(tf.keras.Model):
             attention_bias = tf.zeros_like(tf.reduce_mean(embedded_inputs,axis=-1))
             attention_bias = tf.expand_dims(
                 tf.expand_dims(attention_bias, axis=1), axis=1)
-            encoder_outputs = self.encode(embedded_inputs, attention_bias, training)
+            encoder_outputs, attention_weights = self.encode(embedded_inputs, attention_bias, training)
         with tf.name_scope("Multitask_output"):
             multitask_output = self.multi_task_pre(encoder_outputs)
-            return multitask_output
+            return multitask_output, attention_weights
+            #return multitask_output
+        
 
     def encode(self, embedded_inputs, attention_bias, training):
-        """Generate continuous representation for inputs.
+        """Encode inputs by transformer module with position embeddings.
         Args:
             embedded_inputs: int tensor with shape [batch_size, input_length, hidden_size].
             attention_bias: float tensor with shape [batch_size, 1, 1, input_length].
@@ -272,5 +296,5 @@ class Geformer(tf.keras.Model):
                 encoder_inputs = tf.nn.dropout(
                         encoder_inputs, rate=self.params["layer_postprocess_dropout"])
 
-            return self.encoder_stack(
+            return self.transformer_net(
                     encoder_inputs, attention_bias, training=training)
