@@ -1,2 +1,2 @@
-# Geformer
+# EpiGePT
 To be added...
