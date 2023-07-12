@@ -104,7 +104,7 @@ class ConvModule(tf.keras.layers.Layer):
             if i == 0:
                 conv_layer = tf.keras.layers.Conv2D(
                     filters = params["num_channels"]//2,
-                    kernel_size = (15,1), strides = (1, 1),
+                    kernel_size = (3,1), strides = (1, 1),
                     padding = 'same',activation = None)
                 rconv_layer = tf.keras.layers.Conv2D(
                     filters = params["num_channels"]//2,
