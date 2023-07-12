@@ -274,7 +274,7 @@ def main(argv):
 if __name__ == '__main__':
     FLAGS = flags.FLAGS
     #5,4,8,0.1,512
-    flags.DEFINE_integer("num_channels", 313, "Output channels number for convolution stack")
+    flags.DEFINE_integer("num_channels", 256, "Output channels number for convolution stack")
     flags.DEFINE_integer("num_cb", 7, "Number of convolution blocks")
     flags.DEFINE_integer("seq_length", 1000, "number of words in a sequence")
     flags.DEFINE_integer("hidden_size", 1024, "word embedding dimension")#2048
