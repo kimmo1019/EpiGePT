@@ -7,7 +7,7 @@ import numpy as np
 """
 To do list
     1. Change module name,  xxxModule, xxx: Transformer, ResConv, MultiTaskPre(done)
-    2. Add self-attention weights, need to change attention_layer.py, prepost_layer, geformer(done)
+    2. Add self-attention weights, need to change attention_layer.py, prepost_layer, EpiGePT(done)
     3. Add dilated convolution to Conv
     4. Add pretrain stage
     5. tf.Tape
@@ -207,14 +207,14 @@ class MultiTaskPreModule(tf.keras.layers.Layer):
         x = tf.math.softplus(x)
         return tf.squeeze(x, axis = 2)
 
-class Geformer(tf.keras.Model):
+class EpiGePT(tf.keras.Model):
     def __init__(self, params, name=None):
-        """Initialize layers to build Geformer model.
+        """Initialize layers to build EpiGePT model.
         Args:
             params: hyperparameter object defining layer sizes, dropout values, etc.
             name: name of the model.
         """
-        super(Geformer, self).__init__(name=name)
+        super(EpiGePT, self).__init__(name=name)
         self.params = params
         self.conv_net = ConvModule(params)
         # self.embedding_softmax_layer = embedding_layer.EmbeddingSharedWeights(
@@ -230,7 +230,7 @@ class Geformer(tf.keras.Model):
         }
 
     def call(self, inputs, training):
-        """Calculate outputs of Geformer model.
+        """Calculate outputs of EpiGePT model.
         Args:
             inputs: input tensor list of size 1 or 2
                 First item: DNA one-hot encoding tensor with shape [batch_size, input_length*2^num_cb, 1, 4].
