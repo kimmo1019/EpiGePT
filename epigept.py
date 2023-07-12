@@ -4,18 +4,6 @@ from layers import ffn_layer, attention_layer, prepost_layer
 from layers import embedding_layer, position_embedding
 import numpy as np
 
-"""
-To do list
-    1. Change module name,  xxxModule, xxx: Transformer, ResConv, MultiTaskPre(done)
-    2. Add self-attention weights, need to change attention_layer.py, prepost_layer, EpiGePT(done)
-    3. Add dilated convolution to Conv
-    4. Add pretrain stage
-    5. tf.Tape
-    6. Multiple GPU (done)
-    7. tf.data.Dataset.from_generator
-    8. 1000 parametrized (done)
-"""
-
 class TransformerModule(tf.keras.layers.Layer):
     """Transformer module.
     The module is made up of N identical layers. Each layer is composed
@@ -107,19 +95,50 @@ class ConvModule(tf.keras.layers.Layer):
                     kernel_size = (3,1), strides = (1, 1),
                     padding = 'same',activation = None)
                 rconv_layer = tf.keras.layers.Conv2D(
-                    filters = params["num_channels"]//2,
+                    filters = 32,
                     kernel_size = (1,1), strides = (1, 1),
                     padding = 'same')
+                pooling_layer = tf.keras.layers.MaxPool2D(pool_size = (4, 1))
             elif i == 1:
                 conv_layer = tf.keras.layers.Conv2D(
-                    filters = params["num_channels"],
+                    filters = 64,
                     kernel_size = (5,1), strides = (1, 1),
+                    padding = 'same',activation = None)   
+                rconv_layer = tf.keras.layers.Conv2D(
+                    filters = 64,
+                    kernel_size = (1,1), strides = (1, 1),
+                    padding = 'same')
+                pooling_layer = tf.keras.layers.MaxPool2D(pool_size = (4, 1))
+            elif i == 2:
+                conv_layer = tf.keras.layers.Conv2D(
+                    filters = 96,
+                    kernel_size = (5,1), strides = (1, 1),
+                    padding = 'same',activation = None)   
+                rconv_layer = tf.keras.layers.Conv2D(
+                    filters = 96,
+                    kernel_size = (1,1), strides = (1, 1),
+                    padding = 'same')
+                pooling_layer = tf.keras.layers.MaxPool2D(pool_size = (2, 1))
+            elif i == 3:
+                conv_layer = tf.keras.layers.Conv2D(
+                    filters = 128,
+                    kernel_size = (3,1), strides = (1, 1),
+                    padding = 'same',activation = None)   
+                rconv_layer = tf.keras.layers.Conv2D(
+                    filters = 128,
+                    kernel_size = (1,1), strides = (1, 1),
+                    padding = 'same')
+                pooling_layer = tf.keras.layers.MaxPool2D(pool_size = (2, 1))
+            elif i == 4:
+                conv_layer = tf.keras.layers.Conv2D(
+                    filters = params["num_channels"],
+                    kernel_size = (3,1), strides = (1, 1),
                     padding = 'same',activation = None)   
                 rconv_layer = tf.keras.layers.Conv2D(
                     filters = params["num_channels"],
                     kernel_size = (1,1), strides = (1, 1),
                     padding = 'same')
-            pooling_layer = tf.keras.layers.MaxPool2D(pool_size = (2, 1))
+                pooling_layer = tf.keras.layers.MaxPool2D(pool_size = (2, 1))
             norm_layer = tf.keras.layers.BatchNormalization()
 
             self.layers.append([conv_layer, rconv_layer, pooling_layer, norm_layer])
@@ -180,7 +199,6 @@ class MultiTaskPreModule(tf.keras.layers.Layer):
         self.layers = [conv_layer1, norm_layer, conv_layer2]
 
         super(MultiTaskPreModule, self).build(input_shape)
-
     def get_config(self):
         return {
                 "params": self.params,
@@ -201,11 +219,46 @@ class MultiTaskPreModule(tf.keras.layers.Layer):
         x = conv_layer1(x)
         x = norm_layer(x)
         x = tf.nn.dropout(x, rate=self.params['attention_dropout'])
-        #x = tf.keras.activations.gelu(x)
         x = tf.keras.activations.relu(x)
         x = conv_layer2(x)
         x = tf.math.softplus(x)
         return tf.squeeze(x, axis = 2)
+class MultiTaskPre_LinearModule(tf.keras.layers.Layer):
+    """Multi-task prediction module.
+    This module is mainly made up with 1x1 convolutional layers.
+    """
+    def __init__(self, params):  
+        super(MultiTaskPre_LinearModule, self).__init__()
+        self.params = params
+        self.layers = []
+
+    def build(self, input_shape):
+        """Builds the Multi-task prediction module."""
+        params = self.params
+        dense1 = tf.keras.layers.Dense(8,activation='relu')
+        self.layers = [dense1]
+
+        super(MultiTaskPreModule, self).build(input_shape)
+    def get_config(self):
+        return {
+                "params": self.params,
+        }
+
+    def call(self, inputs, training):
+        """Return the output of the multi-task prediction.
+        Args:
+            inputs: tensor with shape [batch_size, input_length, hidden_size]
+            training: boolean, whether in training mode or not.
+        Returns:
+            Output of multi-task prediction.
+            float32 tensor with shape [batch_size, input_length, num_targets]
+        """
+        dense1 = self.layers
+        x = dense1(x)
+        norm_layer = tf.keras.layers.BatchNormalization()
+        x = norm_layer(x)
+        x = tf.nn.dropout(x, rate=self.params['attention_dropout'])
+        return x
 
 class EpiGePT(tf.keras.Model):
     def __init__(self, params, name=None):
@@ -222,7 +275,7 @@ class EpiGePT(tf.keras.Model):
         self.position_embedding = position_embedding.RelativePositionEmbedding(
                 hidden_size=self.params["hidden_size"])
         self.transformer_net = TransformerModule(params)
-        self.multi_task_pre = MultiTaskPreModule(params)
+        self.multi_task_pre = MultiTaskPre_LinearModule(params)
 
     def get_config(self):
         return {
